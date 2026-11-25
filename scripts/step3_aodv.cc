@@ -27,7 +27,7 @@ Time::SetResolution(Time::NS);
     Ptr<ListPositionAllocator> positionAlloc = CreateObject<ListPositionAllocator>();
     for (uint32_t i = 0; i < nNodes; ++i)
     {
-        positionAlloc->Add(Vector(i * 300, 0, 0));
+        positionAlloc->Add(Vector(i * 200, 0, 0));
     }
     mobility.SetPositionAllocator(positionAlloc);
     mobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
@@ -39,8 +39,9 @@ Time::SetResolution(Time::NS);
     wifi.SetRemoteStationManager("ns3::ConstantRateWifiManager",
                                  "DataMode", StringValue("DsssRate11Mbps"),
                                  "ControlMode", StringValue("DsssRate1Mbps"));
-
-    YansWifiChannelHelper channel = YansWifiChannelHelper::Default();
+YansWifiChannelHelper channel;
+channel.SetPropagationDelay("ns3::ConstantSpeedPropagationDelayModel");
+channel.AddPropagationLoss("ns3::RangePropagationLossModel", "MaxRange", DoubleValue(250.0));
     YansWifiPhyHelper phy;
     phy.SetChannel(channel.Create());
 
