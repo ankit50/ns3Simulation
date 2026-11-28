@@ -1,0 +1,13 @@
+nohup: ignoring input
+--- Source/Destination assignment (for this run) ---
+pair 0: drone 18 -> drone 21
+pair 1: drone 15 -> drone 4
+pair 2: drone 10 -> drone 0
+pair 3: drone 20 -> drone 9
+pair 4: drone 2 -> drone 5
+pair 5: drone 23 -> drone 7
+pair 6: drone 1 -> drone 6
+pair 7: drone 19 -> drone 3
+pair 8: drone 13 -> drone 16
+pair 9: drone 12 -> drone 17
+sim time: 60s

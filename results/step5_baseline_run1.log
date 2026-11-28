@@ -1,0 +1,5 @@
+nohup: ignoring input
+[0/2] Re-checking globbed directories...
+[1/2] Building CXX object scratch/CMakeFiles/scratch_step5_baseline.dir/step5_baseline.cc.o
+[2/2] Linking CXX executable /home/ankit-kharel/ns-3.49/build/optimized/scratch/ns3.49-step5_baseline-optimized
+sim time: 60s
