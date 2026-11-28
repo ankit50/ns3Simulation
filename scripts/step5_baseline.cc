@@ -1,5 +1,5 @@
 // step5_baseline.cc
-// Full paper-scale baseline network, 0% attackers (Table V parameters).
+// Full paper-scale baseline network, 0% to N% attackers (Table V parameters).
 // 25 drones + 1 fixed GBS, AODV, 3D GMM, 10 source/destination pairs,
 // destinations relay collected data to the GBS starting at t=10s.
 //
@@ -53,6 +53,7 @@ main(int argc, char* argv[])
     double avgSpeed = 100.0;
     double progressInterval = 10.0;
     uint32_t run = 1;
+    double attackerRatio = 0.0;
 
     CommandLine cmd(__FILE__);
     cmd.AddValue("nDrones", "Number of drones (GBS is additional)", nDrones);
@@ -61,6 +62,9 @@ main(int argc, char* argv[])
     cmd.AddValue("areaXY", "X/Y area size (m) -- diagnostic knob, paper value is 12000", areaXY);
     cmd.AddValue("progressInterval", "Seconds (sim time) between progress prints", progressInterval);
     cmd.AddValue("run", "RNG run number", run);
+    cmd.AddValue("attackerRatio",
+                 "Fraction of eligible (non-source/destination) drones that are sinkhole attackers",
+                 attackerRatio);
     cmd.Parse(argc, argv);
 
     RngSeedManager::SetSeed(12345);
@@ -142,11 +146,48 @@ main(int argc, char* argv[])
     std::vector<uint32_t> sources(idx.begin(), idx.begin() + 10);
     std::vector<uint32_t> destinations(idx.begin() + 10, idx.begin() + 20);
 
+    // ---- Mark a chosen subset of drones as sinkhole attackers ----
+    // Attackers are only chosen from drones NOT already used as a source or destination
+    // (matches the paper's own methodology -- see Finding 2 in NOTES.md).
+    std::vector<uint32_t> eligibleForAttack;
+    for (uint32_t i = 0; i < nDrones; ++i)
+    {
+        bool isSrc = std::find(sources.begin(), sources.end(), i) != sources.end();
+        bool isDst = std::find(destinations.begin(), destinations.end(), i) != destinations.end();
+        if (!isSrc && !isDst)
+        {
+            eligibleForAttack.push_back(i);
+        }
+    }
+
+    uint32_t nAttackers = std::min(
+        (uint32_t)(attackerRatio * nDrones + 0.5), // round to nearest
+        (uint32_t)eligibleForAttack.size());        // can't exceed what's actually available
+
+    std::cout << "\n--- Attacker assignment ---" << std::endl;
+    std::cout << "Eligible (non-source/destination) drones: " << eligibleForAttack.size()
+               << " out of " << nDrones << std::endl;
+    std::cout << "Requested attacker ratio: " << attackerRatio * 100 << "%  ->  " << nAttackers
+               << " attacker(s)" << std::endl;
+
+    std::vector<uint32_t> attackerIndices;  // <-- NEW: remember which drones are attackers
+    for (uint32_t i = 0; i < nAttackers; ++i)
+    {
+        uint32_t attackerIdx = eligibleForAttack[i];
+        Ptr<Ipv4> ipv4 = drones.Get(attackerIdx)->GetObject<Ipv4>();
+        Ptr<aodv::RoutingProtocol> aodvProto =
+            DynamicCast<aodv::RoutingProtocol>(ipv4->GetRoutingProtocol());
+        NS_ASSERT_MSG(aodvProto, "Node is not running AODV");
+        aodvProto->SetAttribute("Malicious", BooleanValue(true));
+        attackerIndices.push_back(attackerIdx);  // <-- NEW
+        std::cout << "Drone " << attackerIdx << " is a sinkhole attacker" << std::endl;
+    }
+
     uint16_t sdPort = 5000;
     uint16_t gbsPort = 6000;
     uint32_t gbsIndex = nDrones; // GBS's position inside "all" / "interfaces"
 
-    std::cout << "--- Source/Destination assignment (for this run) ---" << std::endl;
+    std::cout << "\n--- Source/Destination assignment (for this run) ---" << std::endl;
     for (uint32_t i = 0; i < 10; ++i)
     {
         std::cout << "pair " << i << ": drone " << sources[i] << " -> drone " << destinations[i]
@@ -193,6 +234,13 @@ main(int argc, char* argv[])
 
     AnimationInterface anim("step5-baseline.xml");
 
+    // ---- NEW: color the sinkhole attacker(s) red in NetAnim so they stand out visually ----
+    for (uint32_t attackerIdx : attackerIndices)
+    {
+        anim.UpdateNodeColor(drones.Get(attackerIdx), 0, 255, 0);
+        anim.UpdateNodeDescription(drones.Get(attackerIdx), "ATTACKER");
+    }
+
     g_startTime = std::chrono::steady_clock::now();
     Simulator::Schedule(Seconds(progressInterval), &PrintProgress, simTime, progressInterval);
     Simulator::Stop(Seconds(simTime));
@@ -200,10 +248,15 @@ main(int argc, char* argv[])
 
     monitor->CheckForLostPackets();
 
+    // AODV's own control traffic (RREQ/RREP/RERR) runs over this well-known port
+    // in ns-3 -- see src/aodv/model/aodv-routing-protocol.h, RoutingProtocol::AODV_PORT.
+    const uint16_t aodvPort = 654;
+
     // ---- Per-flow breakdown: match each flow back to its source/destination pair ----
     Ptr<Ipv4FlowClassifier> classifier = DynamicCast<Ipv4FlowClassifier>(fmh.GetClassifier());
-    std::cout << "\n--- Per-pair breakdown (0% attackers) ---" << std::endl;
+    std::cout << "\n--- Per-pair breakdown ---" << std::endl;
     uint32_t zeroPdrSdPairs = 0;
+    uint64_t controlTx = 0, controlRx = 0;
     for (auto& kv : monitor->GetFlowStats())
     {
         Ipv4FlowClassifier::FiveTuple t = classifier->FindFlow(kv.first);
@@ -225,6 +278,12 @@ main(int argc, char* argv[])
             label = "DST->GBS  pair " + std::to_string(i) + " (drone " +
                     std::to_string(destinations[i]) + " -> GBS)";
         }
+        else if (t.destinationPort == aodvPort || t.sourcePort == aodvPort)
+        {
+            label = "AODV control traffic";
+            controlTx += kv.second.txPackets;
+            controlRx += kv.second.rxPackets;
+        }
 
         if (isSdFlow && flowPdr == 0.0)
         {
@@ -235,24 +294,35 @@ main(int argc, char* argv[])
                    << " PDR(%)=" << flowPdr << " E2E(s)=" << flowE2e << std::endl;
     }
 
-    std::cout << "\nSource->Destination pairs with 0% delivery, zero attackers present: "
-               << zeroPdrSdPairs << " out of 10" << std::endl;
+    std::cout << "\nSource->Destination pairs with 0% delivery: " << zeroPdrSdPairs << " out of 10"
+               << std::endl;
 
     // ---- Aggregate summary (same as before, for comparison against Table VI) ----
     uint64_t tx = 0, rx = 0;
     double delaySum = 0;
     for (auto& kv : monitor->GetFlowStats())
     {
+        Ipv4FlowClassifier::FiveTuple t = classifier->FindFlow(kv.first);
+        bool isControl = (t.destinationPort == aodvPort || t.sourcePort == aodvPort);
+        if (isControl)
+        {
+            continue; // control traffic is reported separately as overhead, not folded into data PDR/E2E
+        }
         tx += kv.second.txPackets;
         rx += kv.second.rxPackets;
         delaySum += kv.second.delaySum.GetSeconds();
     }
     double pdr = tx ? 100.0 * rx / tx : 0;
     double e2e = rx ? delaySum / rx : 0;
+    // Overhead, as defined in the paper: ratio of total control packets generated by the
+    // routing protocol and received by the nodes, to the total number of data packets received.
+    double ovh = rx ? (double)controlRx / (double)rx : 0;
 
     std::cout << "\n=== FINAL SUMMARY ===" << std::endl;
-    std::cout << "nDrones=" << nDrones << " alpha=" << alpha << " PDR(%)=" << pdr
-               << " E2E(s)=" << e2e << std::endl;
+    std::cout << "nDrones=" << nDrones << " alpha=" << alpha << " attackerRatio=" << attackerRatio
+               << " nAttackers=" << nAttackers << " PDR(%)=" << pdr << " E2E(s)=" << e2e
+               << " OVH=" << ovh << " (controlTx=" << controlTx << " controlRx=" << controlRx << ")"
+               << std::endl;
 
     Simulator::Destroy();
     return 0;
